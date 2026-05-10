@@ -32,53 +32,47 @@ jobs:
       - name: Authenticate GitHub CLI
         run: echo "${{ secrets.CODESPACE_ACCESS_TOKEN }}" | gh auth login --with-token
 
-      - name: Debug - Check gh auth and repo
-        run: |
-          echo "Checking authentication:"
-          gh auth status
-          echo "Listing repos accessible:"
-          gh repo list Arzhangolshan --limit 5 || echo "Cannot list repos"
-
+      # =============== CREATE ===============
       - name: Create Codespace
         if: github.event.inputs.action == 'create'
         id: create
         run: |
-          set +e  # جلوگیری از توقف اسکریپت به دلیل خطا
+          set +e
           echo "Creating a new codespace..."
-          # بررسی وجود شاخه‌ها
+          # تشخیص شاخه پیش‌فرض (main یا master)
           git ls-remote --heads origin main > /dev/null 2>&1
           if [ $? -ne 0 ]; then
-            echo "Branch 'main' does not exist, trying 'master'"
+            echo "Branch 'main' does not exist, using 'master'"
             DEFAULT_BRANCH="master"
           else
             DEFAULT_BRANCH="main"
           fi
           echo "Using branch: $DEFAULT_BRANCH"
-          
-          # اجرا با ذخیره خروجی خطا و استاندارد
+
+          # ایجاد codespace با فلگ صحیح --branch
           gh codespace create \
             --repo ${{ github.repository }} \
-            --ref $DEFAULT_BRANCH \
+            --branch "$DEFAULT_BRANCH" \
             --machine standardLinux32gb \
             --display-name "CXVP-Auto" \
             --json name > codespace_output.json 2>&1
-          
+
           EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
           echo "Raw output:"
           cat codespace_output.json
-          
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "❌ gh codespace create failed. Check output above."
             exit 1
           fi
-          
+
           CODESPACE_NAME=$(jq -r '.name' codespace_output.json 2>/dev/null)
           if [ -z "$CODESPACE_NAME" ] || [ "$CODESPACE_NAME" = "null" ]; then
             echo "❌ Failed to extract codespace name."
             exit 1
           fi
-          
+
           echo "✅ Codespace created: $CODESPACE_NAME"
           echo "CODESPACE_NAME=$CODESPACE_NAME" >> $GITHUB_ENV
           echo "name=$CODESPACE_NAME" >> $GITHUB_OUTPUT
@@ -113,9 +107,10 @@ jobs:
           elif gh codespace cp -c "${{ env.CODESPACE_NAME }}":/app/config.json ./config_text.txt 2>/dev/null; then
             echo "✅ Config saved from /app/config.json"
           else
-            echo "❌ Failed to extract config.json"
+            echo "❌ Failed to extract config.json from both paths"
             exit 1
           fi
+          echo "Content of config_text.txt:"
           cat config_text.txt
 
       - name: Commit and push config file
@@ -127,20 +122,24 @@ jobs:
           git commit -m "Update g2ray config [skip ci]" || echo "No changes to commit"
           git push
 
+      # =============== STOP ===============
       - name: Stop Codespace
         if: github.event.inputs.action == 'stop'
         run: |
           if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-            echo "No CODESPACE_NAME. Cannot stop."
+            echo "❌ No CODESPACE_NAME in environment. Cannot stop."
             exit 1
           fi
+          echo "Stopping codespace: ${{ env.CODESPACE_NAME }}"
           gh codespace stop -c "${{ env.CODESPACE_NAME }}"
 
+      # =============== DELETE ===============
       - name: Delete Codespace
         if: github.event.inputs.action == 'delete'
         run: |
           if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-            echo "No CODESPACE_NAME. Cannot delete."
+            echo "❌ No CODESPACE_NAME in environment. Cannot delete."
             exit 1
           fi
+          echo "Deleting codespace: ${{ env.CODESPACE_NAME }}"
           gh codespace delete -c "${{ env.CODESPACE_NAME }}" --force
