@@ -17,112 +17,135 @@ jobs:
   manage-codespace:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup GitHub CLI
-      run: |
-        type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-        sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-        sudo apt update
-        sudo apt install gh -y
+      - name: Setup GitHub CLI
+        run: |
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh -y
 
-    - name: Authenticate GitHub CLI
-      run: echo "${{ secrets.CODESPACE_ACCESS_TOKEN }}" | gh auth login --with-token
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.CODESPACE_ACCESS_TOKEN }}" | gh auth login --with-token
 
-    - name: Debug - List existing codespaces
-      run: |
-        echo "Current codespaces in this repo:"
-        gh api "repos/${{ github.repository }}/codespaces" --jq '.[].name' || echo "No codespaces or error"
+      # =============== CREATE ===============
+      - name: Create Codespace
+        if: github.event.inputs.action == 'create'
+        id: create
+        run: |
+          echo "Creating a new codespace..."
+          # توجه: شاخه پیش‌فرض را بررسی کنید (main یا master) - فعلاً main گذاشته شده
+          gh codespace create \
+            --repo ${{ github.repository }} \
+            --ref main \
+            --machine standardLinux32gb \
+            --display-name "CXVP-Auto" \
+            --json name > codespace_output.json 2>&1
 
-    - name: Create Codespace
-      if: github.event.inputs.action == 'create'
-      id: create
-      run: |
-        echo "Creating a new codespace..."
-        # استفاده از --json برای گرفتن خروجی دقیق
-        RESPONSE=$(gh codespace create \
-          --repo ${{ github.repository }} \
-          --ref master \
-          --machine standardLinux32gb \
-          --display-name "CXVP-Auto" \
-          --json name 2>&1)
-        
-        echo "Raw response: $RESPONSE"
-        
-        # استخراج name از JSON
-        CODESPACE_NAME=$(echo "$RESPONSE" | jq -r '.name' 2>/dev/null)
-        
-        if [ -z "$CODESPACE_NAME" ] || [ "$CODESPACE_NAME" = "null" ]; then
-          echo "❌ Failed to create codespace. Response: $RESPONSE"
-          exit 1
-        fi
-        
-        echo "✅ Codespace created: $CODESPACE_NAME"
-        echo "CODESPACE_NAME=$CODESPACE_NAME" >> $GITHUB_ENV
-        echo "name=$CODESPACE_NAME" >> $GITHUB_OUTPUT
+          EXIT_CODE=$?
+          echo "Exit code: $EXIT_CODE"
+          echo "Raw output:"
+          cat codespace_output.json
 
-    - name: Wait for codespace to be ready
-      if: github.event.inputs.action == 'create'
-      run: |
-        if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-          echo "❌ CODESPACE_NAME is empty"
-          exit 1
-        fi
-        echo "Waiting for codespace ${{ env.CODESPACE_NAME }} to be ready..."
-        for i in {1..40}; do
-          sleep 15
-          STATE=$(gh api "repos/${{ github.repository }}/codespaces" --jq ".[] | select(.name==\"${{ env.CODESPACE_NAME }}\") | .state" 2>/dev/null || echo "unknown")
-          if [ "$STATE" = "Available" ]; then
-            echo "✅ Codespace is ready!"
-            exit 0
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ gh codespace create failed with exit code $EXIT_CODE"
+            exit 1
           fi
-          echo "Attempt $i/40 - State: ${STATE:-not found}"
-        done
-        echo "❌ Timeout waiting for codespace to become available"
-        exit 1
 
-    - name: Extract config.json from codespace
-      if: github.event.inputs.action == 'create'
-      run: |
-        echo "Extracting config from ${{ env.CODESPACE_NAME }}..."
-        # تلاش برای کپی فایل
-        if gh codespace cp -c "${{ env.CODESPACE_NAME }}":/etc/config.json ./config_text.txt 2>/dev/null; then
-          echo "✅ Config saved from /etc/config.json"
-        elif gh codespace cp -c "${{ env.CODESPACE_NAME }}":/app/config.json ./config_text.txt 2>/dev/null; then
-          echo "✅ Config saved from /app/config.json"
-        else
-          echo "❌ Failed to extract config.json from both paths"
+          CODESPACE_NAME=$(jq -r '.name' codespace_output.json 2>/dev/null)
+
+          if [ -z "$CODESPACE_NAME" ] || [ "$CODESPACE_NAME" = "null" ]; then
+            echo "❌ Failed to extract codespace name."
+            exit 1
+          fi
+
+          echo "✅ Codespace created: $CODESPACE_NAME"
+          echo "CODESPACE_NAME=$CODESPACE_NAME" >> $GITHUB_ENV
+          echo "name=$CODESPACE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Wait for codespace to be ready
+        if: github.event.inputs.action == 'create'
+        run: |
+          if [ -z "${{ env.CODESPACE_NAME }}" ]; then
+            echo "❌ CODESPACE_NAME is empty"
+            exit 1
+          fi
+          echo "Waiting for codespace ${{ env.CODESPACE_NAME }} to be ready..."
+          for i in {1..40}; do
+            sleep 15
+            STATE=$(gh api "repos/${{ github.repository }}/codespaces" --jq ".[] | select(.name==\"${{ env.CODESPACE_NAME }}\") | .state" 2>/dev/null || echo "unknown")
+            if [ "$STATE" = "Available" ]; then
+              echo "✅ Codespace is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/40 - State: ${STATE:-not found}"
+          done
+          echo "❌ Timeout waiting for codespace to become available"
           exit 1
-        fi
-        
-        cat config_text.txt
 
-    - name: Commit and push config file
-      if: github.event.inputs.action == 'create'
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add config_text.txt
-        git commit -m "Update g2ray config [skip ci]" || echo "No changes to commit"
-        git push
+      - name: Extract config.json from codespace
+        if: github.event.inputs.action == 'create'
+        run: |
+          echo "Extracting config from ${{ env.CODESPACE_NAME }}..."
+          # تلاش برای کپی فایل از دو مسیر محتمل
+          if gh codespace cp -c "${{ env.CODESPACE_NAME }}":/etc/config.json ./config_text.txt 2>/dev/null; then
+            echo "✅ Config saved from /etc/config.json"
+          elif gh codespace cp -c "${{ env.CODESPACE_NAME }}":/app/config.json ./config_text.txt 2>/dev/null; then
+            echo "✅ Config saved from /app/config.json"
+          else
+            echo "❌ Failed to extract config.json from both paths"
+            exit 1
+          fi
 
-    - name: Stop Codespace
-      if: github.event.inputs.action == 'stop'
-      run: |
-        if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-          echo "No CODESPACE_NAME. Cannot stop."
-          exit 1
-        fi
-        gh codespace stop -c "${{ env.CODESPACE_NAME }}"
+          echo "Content of config_text.txt:"
+          cat config_text.txt
 
-    - name: Delete Codespace
-      if: github.event.inputs.action == 'delete'
-      run: |
-        if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-          echo "No CODESPACE_NAME. Cannot delete."
-          exit 1
-        fi
-        gh codespace delete -c "${{ env.CODESPACE_NAME }}" --force
+      - name: Commit and push config file
+        if: github.event.inputs.action == 'create'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config_text.txt
+          git commit -m "Update g2ray config [skip ci]" || echo "No changes to commit"
+          git push
+
+      # =============== STOP ===============
+      - name: Stop Codespace
+        if: github.event.inputs.action == 'stop'
+        run: |
+          # سعی می‌کنیم نام codespace را از فایل ذخیره شده یا متغیر محیطی بخوانیم
+          if [ -z "${{ env.CODESPACE_NAME }}" ]; then
+            echo "No CODESPACE_NAME in environment. Attempting to read from saved file..."
+            if [ -f codespace_name.txt ]; then
+              CODESPACE_NAME=$(cat codespace_name.txt)
+            else
+              echo "❌ Could not determine codespace name. Please provide manually."
+              exit 1
+            fi
+          else
+            CODESPACE_NAME="${{ env.CODESPACE_NAME }}"
+          fi
+          echo "Stopping codespace: $CODESPACE_NAME"
+          gh codespace stop -c "$CODESPACE_NAME"
+
+      # =============== DELETE ===============
+      - name: Delete Codespace
+        if: github.event.inputs.action == 'delete'
+        run: |
+          if [ -z "${{ env.CODESPACE_NAME }}" ]; then
+            echo "No CODESPACE_NAME in environment. Attempting to read from saved file..."
+            if [ -f codespace_name.txt ]; then
+              CODESPACE_NAME=$(cat codespace_name.txt)
+            else
+              echo "❌ Could not determine codespace name."
+              exit 1
+            fi
+          else
+            CODESPACE_NAME="${{ env.CODESPACE_NAME }}"
+          fi
+          echo "Deleting codespace: $CODESPACE_NAME"
+          gh codespace delete -c "$CODESPACE_NAME" --force
