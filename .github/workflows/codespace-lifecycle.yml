@@ -39,36 +39,35 @@ jobs:
         run: |
           set +e
           echo "Creating a new codespace..."
-          # تشخیص شاخه پیش‌فرض (main یا master)
+          # تشخیص شاخه پیش‌فرض
           git ls-remote --heads origin main > /dev/null 2>&1
           if [ $? -ne 0 ]; then
-            echo "Branch 'main' does not exist, using 'master'"
             DEFAULT_BRANCH="master"
           else
             DEFAULT_BRANCH="main"
           fi
           echo "Using branch: $DEFAULT_BRANCH"
 
-          # ایجاد codespace با فلگ صحیح --branch
+          # ایجاد codespace بدون --json و ذخیره خروجی
           gh codespace create \
             --repo ${{ github.repository }} \
             --branch "$DEFAULT_BRANCH" \
             --machine standardLinux32gb \
-            --display-name "CXVP-Auto" \
-            --json name > codespace_output.json 2>&1
+            --display-name "CXVP-Auto" > codespace_output.txt 2>&1
 
           EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
           echo "Raw output:"
-          cat codespace_output.json
+          cat codespace_output.txt
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "❌ gh codespace create failed. Check output above."
             exit 1
           fi
 
-          CODESPACE_NAME=$(jq -r '.name' codespace_output.json 2>/dev/null)
-          if [ -z "$CODESPACE_NAME" ] || [ "$CODESPACE_NAME" = "null" ]; then
+          # استخراج نام codespace (اولین کلمه از اولین خط)
+          CODESPACE_NAME=$(head -n1 codespace_output.txt | awk '{print $1}')
+          if [ -z "$CODESPACE_NAME" ]; then
             echo "❌ Failed to extract codespace name."
             exit 1
           fi
