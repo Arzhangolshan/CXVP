@@ -1,0 +1,68 @@
+# .github/workflows/setup-codespace.yml
+name: g2ray Auto Setup
+
+on:
+  # برای اجرای دستی از طریق GitHub UI
+  workflow_dispatch:
+  # برای اجرای زمان‌بندی شده (حذف یا تغییر کامنت)
+  # schedule:
+  #   - cron: '0 0 * * *' # هر روز ساعت 00:00 UTC اجرا می‌شه
+
+jobs:
+  setup-and-extract-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create a new codespace via GitHub API
+        run: |
+          echo "Requesting a new codespace from API..."
+          # با فراخوانی API، ایجاد Codespace جدید رو درخواست می‌کنیم
+          CREATE_RESPONSE=$(curl -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.CODESPACE_ACCESS_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/codespaces \
+            -d '{"ref":"master","machine":"standardLinux32gb"}')
+          
+          # نام Codespace ساخته شده رو از پاسخ JSON استخراج می‌کنیم
+          CODESPACE_NAME=$(echo $CREATE_RESPONSE | jq -r '.name')
+          echo "CODESPACE_NAME=$CODESPACE_NAME" >> $GITHUB_ENV
+
+      - name: Wait for codespace to be ready
+        run: |
+          echo "Waiting for codespace to be fully ready..."
+          # حداکثر ۵ دقیقه (۳۰ بار تلاش ۱۰ ثانیه‌ای) صبر می‌کنه
+          for i in {1..30}; do
+            sleep 10
+            STATUS=$(curl -L -H "Authorization: Bearer ${{ secrets.CODESPACE_ACCESS_TOKEN }}" \
+              https://api.github.com/repos/${{ github.repository }}/codespaces | jq -r ".[] | select(.name==\"${{ env.CODESPACE_NAME }}\") | .state")
+            if [ "$STATUS" = "Available" ]; then
+              echo "Codespace is ready!"
+              break
+            fi
+          done
+
+      - name: Extract and save configuration
+        run: |
+          echo "Fetching and extracting config from the codespace..."
+          # اجرای یک دستور درون Codespace برای دریافت محتوای فایل کانفیگ
+          curl -L -X POST \
+            -H "Authorization: Bearer ${{ secrets.CODESPACE_ACCESS_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/codespaces/${{ env.CODESPACE_NAME }}/commands \
+            -d '{"command":"cat /etc/config.json"}'
+          
+          # در اینجا می‌تونید با استفاده از jq و پردازش پاسخ JSON، محتوای کانفیگ رو استخراج کنید.
+          # پس از استخراج، محتوا رو در یک فایل متنی در پوشه‌ی اصلی مخزن ذخیره کنید.
+          # echo "$CONFIG_CONTENT" > config_text.txt
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config_text.txt
+          git commit -m "Add g2ray config [skip ci]"
+          git push
+
+      - name: Keep the codespace alive (Python script)
+        run: |
+          python3 .github/scripts/keep_alive.py ${{ env.CODESPACE_NAME }}
