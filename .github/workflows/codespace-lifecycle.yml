@@ -32,24 +32,31 @@ jobs:
     - name: Authenticate GitHub CLI
       run: echo "${{ secrets.CODESPACE_ACCESS_TOKEN }}" | gh auth login --with-token
 
-    # =============== CREATE ===============
+    - name: Debug - List existing codespaces
+      run: |
+        echo "Current codespaces in this repo:"
+        gh api "repos/${{ github.repository }}/codespaces" --jq '.[].name' || echo "No codespaces or error"
+
     - name: Create Codespace
       if: github.event.inputs.action == 'create'
       id: create
       run: |
         echo "Creating a new codespace..."
-        
-        # ایجاد codespace و گرفتن نام آن
-        CODESPACE_NAME=$(gh codespace create \
+        # استفاده از --json برای گرفتن خروجی دقیق
+        RESPONSE=$(gh codespace create \
           --repo ${{ github.repository }} \
           --ref master \
           --machine standardLinux32gb \
           --display-name "CXVP-Auto" \
-          --quiet 2>&1)
+          --json name 2>&1)
         
-        # بررسی موفقیت
-        if echo "$CODESPACE_NAME" | grep -q "error"; then
-          echo "❌ Failed to create codespace: $CODESPACE_NAME"
+        echo "Raw response: $RESPONSE"
+        
+        # استخراج name از JSON
+        CODESPACE_NAME=$(echo "$RESPONSE" | jq -r '.name' 2>/dev/null)
+        
+        if [ -z "$CODESPACE_NAME" ] || [ "$CODESPACE_NAME" = "null" ]; then
+          echo "❌ Failed to create codespace. Response: $RESPONSE"
           exit 1
         fi
         
@@ -60,15 +67,19 @@ jobs:
     - name: Wait for codespace to be ready
       if: github.event.inputs.action == 'create'
       run: |
-        echo "Waiting for codespace to be ready..."
-        for i in {1..30}; do
-          sleep 10
-          STATE=$(gh api "repos/${{ github.repository }}/codespaces" --jq ".[] | select(.name==\"${{ env.CODESPACE_NAME }}\") | .state")
+        if [ -z "${{ env.CODESPACE_NAME }}" ]; then
+          echo "❌ CODESPACE_NAME is empty"
+          exit 1
+        fi
+        echo "Waiting for codespace ${{ env.CODESPACE_NAME }} to be ready..."
+        for i in {1..40}; do
+          sleep 15
+          STATE=$(gh api "repos/${{ github.repository }}/codespaces" --jq ".[] | select(.name==\"${{ env.CODESPACE_NAME }}\") | .state" 2>/dev/null || echo "unknown")
           if [ "$STATE" = "Available" ]; then
             echo "✅ Codespace is ready!"
             exit 0
           fi
-          echo "Attempt $i/30 - State: $STATE"
+          echo "Attempt $i/40 - State: ${STATE:-not found}"
         done
         echo "❌ Timeout waiting for codespace to become available"
         exit 1
@@ -76,16 +87,17 @@ jobs:
     - name: Extract config.json from codespace
       if: github.event.inputs.action == 'create'
       run: |
-        echo "Extracting /etc/config.json from codespace..."
-        gh codespace cp -c "${{ env.CODESPACE_NAME }}":/etc/config.json ./config_text.txt || {
-          echo "⚠️ Could not copy config.json. Trying alternative path..."
-          gh codespace cp -c "${{ env.CODESPACE_NAME }}":/app/config.json ./config_text.txt || {
-            echo "❌ Failed to extract config.json"
-            exit 1
-          }
-        }
+        echo "Extracting config from ${{ env.CODESPACE_NAME }}..."
+        # تلاش برای کپی فایل
+        if gh codespace cp -c "${{ env.CODESPACE_NAME }}":/etc/config.json ./config_text.txt 2>/dev/null; then
+          echo "✅ Config saved from /etc/config.json"
+        elif gh codespace cp -c "${{ env.CODESPACE_NAME }}":/app/config.json ./config_text.txt 2>/dev/null; then
+          echo "✅ Config saved from /app/config.json"
+        else
+          echo "❌ Failed to extract config.json from both paths"
+          exit 1
+        fi
         
-        echo "✅ Config saved to config_text.txt"
         cat config_text.txt
 
     - name: Commit and push config file
@@ -97,25 +109,20 @@ jobs:
         git commit -m "Update g2ray config [skip ci]" || echo "No changes to commit"
         git push
 
-    # =============== STOP ===============
     - name: Stop Codespace
       if: github.event.inputs.action == 'stop'
       run: |
-        echo "Stopping codespace..."
-        # ابتدا سعی می‌کنیم نام codespace را از قبل داشته باشیم، اگر نه از user بپرسیم
         if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-          echo "No CODESPACE_NAME in env. Please provide name manually or use delete."
+          echo "No CODESPACE_NAME. Cannot stop."
           exit 1
         fi
         gh codespace stop -c "${{ env.CODESPACE_NAME }}"
 
-    # =============== DELETE ===============
     - name: Delete Codespace
       if: github.event.inputs.action == 'delete'
       run: |
-        echo "Deleting codespace..."
         if [ -z "${{ env.CODESPACE_NAME }}" ]; then
-          echo "No CODESPACE_NAME in env. Please provide name manually."
+          echo "No CODESPACE_NAME. Cannot delete."
           exit 1
         fi
         gh codespace delete -c "${{ env.CODESPACE_NAME }}" --force
